@@ -357,9 +357,10 @@
   </div>
 
 <!--添加网站运行时间-->
-<div>
-<span>小破站已经在风雨中度过了</span>
-<span id="timeDate">载入天数...</span>
+<div class="div">
+<span>已运行：</span><span id="timeDate">载入天数...</span>
+<span> | </span>
+<span>已咕咕：</span><span id="guguTime">载入天数...</span>
 <script>
     function createtime() {
         const startTime = '11/12/2021 00:00:00',
@@ -379,10 +380,25 @@
             time[k] = `${time[k]}`.padStart(2, '0')
         }
         */
-        document.getElementById("timeDate").innerHTML = ` ${days} 天`
-        //document.getElementById("times").innerHTML = ` ${time.hours} 小时 ${time.mins} 分 ${time.seconds} 秒`
+        document.getElementById("timeDate").innerHTML = `${days} 天`
+        //document.getElementById("times").innerHTML = `${time.hours} 小时 ${time.mins} 分 ${time.seconds} 秒`
     }
-    setInterval(createtime, 500)
+    //setInterval(createtime, 500)
+    createtime()
+    
+    function calcGuguTime() {
+        const lastUpdate = new Date(document.lastModified)
+        let mill = new Date() - lastUpdate,
+            seconds = Math.floor(mill / 1000),
+            mins = Math.floor(seconds / 60),
+            hours = Math.floor(mins / 60),
+            days = Math.floor(hours / 24)
+        document.getElementById("guguTime").innerHTML = `${days} 天`
+        //document.write(lastUpdate)
+    }
+    calcGuguTime()
+    //setInterval(calcGuguTime, 500)
+    
 </script>
 </div>
 
