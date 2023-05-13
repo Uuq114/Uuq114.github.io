@@ -31,15 +31,11 @@ hexo d
 
 
 
-
-
-
-
-新建一篇文章
+新建一篇文章，文章可用指定`tags`、`categories`
 
 ```bash
 hexo n <new_post_name>
 ```
 
-文章可用指定`tags`、`categories`
+
 
