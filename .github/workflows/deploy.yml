@@ -6,7 +6,7 @@ on:
     branches: [hexo]
 
 jobs:
-  hexo-deployment:
+  build:
     runs-on: ubuntu-latest
     env:
       TZ: Asia/Shanghai
@@ -36,7 +36,7 @@ jobs:
         npm install hexo-cli -g
         npm install
 
-      - name: Deploy
-        run: |
-          hexo clean
-          hexo deploy
+    - name: Deploy
+      run: |
+        hexo clean
+        hexo deploy
