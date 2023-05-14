@@ -1,5 +1,5 @@
 ---
-title: blog_update_log
+title: 博客更新日志
 date: 2021-11-13 19:01:47
 categories:
 - Blog
@@ -16,6 +16,10 @@ TODOs：
 * 有新评论时邮件通知
 
 
+
+2023.05.14：
+
+* 支持 LaTeX 显示
 
 2023.05.13：
 

@@ -115,3 +115,10 @@ deploy:
   type: git
   repo: git@github.com:Uuq114/Uuq114.github.io.git
   branch: main
+
+math:
+engine: 'mathjax' # or 'katex'
+mathjax:
+  # src: custom_mathjax_source
+  config:
+    # MathJax config
