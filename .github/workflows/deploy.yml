@@ -34,9 +34,9 @@ jobs:
         git config --global user.email "811670442@qq.com"
         git config --global user.name "Uuq114"
         npm install hexo-cli -g
-        npm uninstall hexo-renderer-markded --save
-        npm install hexo-renderer-pandoc
         npm install
+        npm uninstall hexo-renderer-markd --save
+        npm install hexo-renderer-pandoc --save
 
     - name: Deploy
       run: |
