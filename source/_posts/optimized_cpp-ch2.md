@@ -2,7 +2,7 @@
 title: optimized_cpp-ch2
 date: 2021-11-13 00:34:39
 tags: 
-- c++
+- C++
 categories: 
 - 语言
 ---

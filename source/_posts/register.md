@@ -2,8 +2,8 @@
 title: gdb、常用寄存器
 date: 2021-11-22 16:43:50
 tags: 
-- register
-- gdb
+- Register
+- GDB
 categories:
 - 操作系统
 ---

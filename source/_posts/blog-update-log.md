@@ -1,10 +1,8 @@
 ---
 title: blog_update_log
 date: 2021-11-13 19:01:47
-tags: 
-- log
 categories:
-- blog
+- Blog
 ---
 
 # 博客更新日志
