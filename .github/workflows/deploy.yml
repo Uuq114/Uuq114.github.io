@@ -40,4 +40,4 @@ jobs:
         git config --global user.email $GIT_EMAIL
         current_time=$(date "+%Y-%m-%d %H:%M:%S")
         git commit -m "Site deployed by GitHub Actions: ${current_time}"
-        git push --force --quiet "https://$GH_TOKEN@$REPO" main:main
+        git push --force --quiet "https://$GH_TOKEN@$REPO" master:main
