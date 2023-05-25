@@ -3,10 +3,8 @@ title: {{ title }}
 date: {{ date }}
 updated: {{ date }}	
 permalink:
-
 tags: []
-categories
-
+categories:
 description:
 copyright: true
 ---
