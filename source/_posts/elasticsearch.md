@@ -11,7 +11,7 @@ description:
 
 
 
-# 0x00 简介
+## 0x00 简介
 
 Elasticsearch 是一个分布式的全文搜索引擎，可以近乎实时地存储、检索数据。ES 的底层基于 Lucene 全文信息检索工具包，另一个搜索系统 Solr 也是基于 Lucene 开发的。
 
