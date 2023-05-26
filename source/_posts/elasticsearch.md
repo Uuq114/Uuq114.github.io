@@ -1,6 +1,6 @@
 ---
 title: Elasticsearch 101
-tags: [elasticsearch]
+tags: [Elasticsearch]
 copyright: true
 date: 2023-05-25 17:03:11
 updated: 2023-05-25 17:03:11
