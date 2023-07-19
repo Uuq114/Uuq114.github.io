@@ -2,3 +2,4 @@
 *.log
 public/
 .deploy*/
+node_modules/
