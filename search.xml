@@ -1,0 +1,449 @@
+<?xml version="1.0" encoding="utf-8"?>
+<search>
+  <entry>
+    <title>Linux ptrace</title>
+    <url>/2021/12/04/52/</url>
+    <content><![CDATA[<h1 id="简介">简介</h1>
+<p>最近的项目中需要用到<code>ptrace</code>这样的系统调用函数，这里总结一下要注意的地方。</p>
+<span id="more"></span>
+<h2 id="系统调用">系统调用</h2>
+<p>在编写程序的时候，我们会使用编程语言提供的库函数，例如<code>read()</code>、<code>fork()</code>，这些库函数实际上是对一些底层操作的包装。这些底层操作就称为系统调用。</p>
+<p>一个系统调用包括：</p>
+<ul>
+<li>编号，用于区分</li>
+<li>参数</li>
+<li>寄存器，用于存放参数</li>
+</ul>
+<p>例如，<code>write()</code>会被转换成：</p>
+<figure class="highlight plaintext"><table><tr><td class="code"><pre><span class="line">write(2, &quot;Hello&quot;, 5);</span><br><span class="line">/*----------------*/</span><br><span class="line">movl $1,%eax	; 系统调用号</span><br><span class="line">movl $2,%ebx</span><br><span class="line">movl $hello,%ecx</span><br><span class="line">movl $5,%edx</span><br><span class="line">int $0x80		; 中断</span><br></pre></td></tr></table></figure>
+<h2 id="ptrace"><code>ptrace</code></h2>
+<p><code>ptrace</code>可以让一个进程（tracer）监视和控制另一个进程（tracee），并且可以改变内存和寄存器的内容，一般用于debug。</p>
+<p><code>ptrace</code>起作用的时间：在执行system call之前，kernel会检查process是否被追踪。如果是的，那么kernel会中止tracee并将控制权交给追踪者。</p>
+<p><strong>一个例子</strong>：</p>
+<figure class="highlight c"><table><tr><td class="code"><pre><span class="line"><span class="meta">#<span class="meta-keyword">include</span> <span class="meta-string">&lt;sys/ptrace.h&gt;</span></span></span><br><span class="line"><span class="meta">#<span class="meta-keyword">include</span> <span class="meta-string">&lt;sys/types.h&gt;</span></span></span><br><span class="line"><span class="meta">#<span class="meta-keyword">include</span> <span class="meta-string">&lt;sys/wait.h&gt;</span></span></span><br><span class="line"><span class="meta">#<span class="meta-keyword">include</span> <span class="meta-string">&lt;unistd.h&gt;</span></span></span><br><span class="line"><span class="meta">#<span class="meta-keyword">include</span> <span class="meta-string">&lt;sys/user.h&gt;</span> <span class="comment">// ORIG_RAX</span></span></span><br><span class="line"><span class="meta">#<span class="meta-keyword">include</span> <span class="meta-string">&lt;sys/reg.h&gt;</span> <span class="comment">// ORIG_RAX</span></span></span><br><span class="line"><span class="meta">#<span class="meta-keyword">include</span> <span class="meta-string">&lt;stdio.h&gt;</span></span></span><br><span class="line"></span><br><span class="line"><span class="function"><span class="keyword">int</span> <span class="title">main</span><span class="params">()</span> </span>&#123;</span><br><span class="line">    <span class="keyword">pid_t</span> child;</span><br><span class="line">    <span class="keyword">long</span> orig_eax;</span><br><span class="line">    child = fork();</span><br><span class="line">    <span class="keyword">if</span>(child == <span class="number">0</span>) &#123;</span><br><span class="line">        ptrace(PTRACE_TRACEME, <span class="number">0</span>, <span class="literal">NULL</span>, <span class="literal">NULL</span>);</span><br><span class="line">        execl(<span class="string">&quot;/bin/ls&quot;</span>, <span class="string">&quot;ls&quot;</span>, <span class="literal">NULL</span>);</span><br><span class="line">    &#125;</span><br><span class="line">    <span class="keyword">else</span> &#123;</span><br><span class="line">        wait(<span class="literal">NULL</span>);</span><br><span class="line">        orig_eax = ptrace(PTRACE_PEEKUSER,</span><br><span class="line">                          child, <span class="number">8</span> * ORIG_RAX, <span class="comment">// 在64位的机器上，所以要乘8，如果是32位乘4</span></span><br><span class="line">                          <span class="literal">NULL</span>);</span><br><span class="line">        <span class="comment">/* 也可以用下面的方法得到orig_eax，不需要计算register位置</span></span><br><span class="line"><span class="comment">       	struct user_regs_struct regs;</span></span><br><span class="line"><span class="comment">		ptrace(PTRACE_GETREGS, child, NULL, &amp;regs);</span></span><br><span class="line"><span class="comment">		printf(&quot;The child made a system call %ldn&quot;, regs.orig_rax);</span></span><br><span class="line"><span class="comment">        */</span></span><br><span class="line">        <span class="built_in">printf</span>(<span class="string">&quot;The child made a &quot;</span></span><br><span class="line">               <span class="string">&quot;system call %ld\n&quot;</span>, orig_eax);</span><br><span class="line">        ptrace(PTRACE_CONT, child, <span class="literal">NULL</span>, <span class="literal">NULL</span>);</span><br><span class="line">    &#125;</span><br><span class="line">    <span class="keyword">return</span> <span class="number">0</span>;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+<p>输出是：</p>
+<figure>
+<img src="output.png" alt="output" /><figcaption aria-hidden="true">output</figcaption>
+</figure>
+<p>对例子的分析：</p>
+<p>在12行调用了<code>fork</code>，child会先调用<code>ptrace</code>，<code>flag</code>为<code>PTRACE_TRACEME</code>，告诉kernel它正在被追踪，于是在child执行<code>execve</code> system call时，控制权会被交给parent。</p>
+<p>parent使用<code>wait</code>等待kernel的通知。之后parent可以检视参数（读register）。</p>
+<p>当系统调用发生时，kernel会保存eax的内容，parent可以用<code>ptrace</code>的<code>PTRACE_PEEKUSER</code>参数读这个值，如19行。</p>
+<p>parent完成检视之后，以<code>PTRACE_CONT</code>参数调用<code>ptrace</code>，可以继续system call。</p>
+<blockquote>
+<p>运行的结果是<code>59</code>，和原网址的结果<code>11</code>不同，原因是什么？</p>
+<p><code>asm/unistd.h</code>文件在i386、ILP32和64位机上的不同，<code>asm/unistd_64.h</code>中有：<code>#define __NR_execve 59</code></p>
+</blockquote>
+<p><code>ptrace</code>的<strong>用法</strong>：</p>
+<figure class="highlight c"><table><tr><td class="code"><pre><span class="line"><span class="function"><span class="keyword">long</span> <span class="title">ptrace</span><span class="params">(<span class="keyword">enum</span> __ptrace_request request,</span></span></span><br><span class="line"><span class="params"><span class="function">            <span class="keyword">pid_t</span> pid,</span></span></span><br><span class="line"><span class="params"><span class="function">            <span class="keyword">void</span> *addr,</span></span></span><br><span class="line"><span class="params"><span class="function">            <span class="keyword">void</span> *data)</span></span>;</span><br></pre></td></tr></table></figure>
+<p><code>request</code>参数指定了<code>ptrace</code>的行为和后面参数的用法。</p>
+<blockquote>
+<p><code>PTRACE_TRACEME</code>, <code>PTRACE_PEEKTEXT</code>, <code>PTRACE_PEEKDATA</code>, <code>PTRACE_PEEKUSER</code>, <code>PTRACE_POKETEXT</code>, <code>PTRACE_POKEDATA</code>, <code>PTRACE_POKEUSER</code>, <code>PTRACE_GETREGS</code>, <code>PTRACE_GETFPREGS</code>, <code>PTRACE_SETREGS</code>, <code>PTRACE_SETFPREGS</code>, <code>PTRACE_CONT</code>, <code>PTRACE_SYSCALL</code>, <code>PTRACE_SINGLESTEP</code>, <code>PTRACE_DETACH</code></p>
+</blockquote>
+<p><strong>追踪正在运行的process</strong></p>
+<p>在上面，child使用<code>PTRACE_TRACEME</code>来获得追踪，如果我们需要追踪一个正在运行的process，我们需要使用<code>PTRACE_ATTACH</code>。</p>
+<p><u>当<code>PTRACE_ATTACH</code>和<code>pid</code>一起使用时，约等于process调用了<code>PTRACE_TRACEME</code>并且变成了tracer的child</u>。tracee会收到<code>SIGSTOP</code>信号，我们在修改完数据之后，需要调用<code>PTRACE_DETACH</code>。</p>
+<p><code>test.c</code></p>
+<figure class="highlight c"><table><tr><td class="code"><pre><span class="line"><span class="meta">#<span class="meta-keyword">include</span> <span class="meta-string">&lt;stdio.h&gt;</span></span></span><br><span class="line"><span class="meta">#<span class="meta-keyword">include</span> <span class="meta-string">&lt;stdlib.h&gt;</span></span></span><br><span class="line"><span class="meta">#<span class="meta-keyword">include</span> <span class="meta-string">&lt;unistd.h&gt;</span></span></span><br><span class="line"></span><br><span class="line"><span class="function"><span class="keyword">int</span> <span class="title">main</span><span class="params">()</span></span></span><br><span class="line"><span class="function"></span>&#123;   <span class="keyword">int</span> i;</span><br><span class="line">    <span class="keyword">for</span>(i = <span class="number">0</span>;i &lt; <span class="number">10</span>; ++i) &#123;</span><br><span class="line">        <span class="built_in">printf</span>(<span class="string">&quot;My counter: %d\n&quot;</span>, i);</span><br><span class="line">        sleep(<span class="number">2</span>);</span><br><span class="line">    &#125;</span><br><span class="line">    <span class="keyword">return</span> <span class="number">0</span>;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+<p><code>tracer.c</code></p>
+<figure class="highlight c"><table><tr><td class="code"><pre><span class="line"><span class="meta">#<span class="meta-keyword">include</span> <span class="meta-string">&lt;sys/ptrace.h&gt;</span></span></span><br><span class="line"><span class="meta">#<span class="meta-keyword">include</span> <span class="meta-string">&lt;sys/types.h&gt;</span></span></span><br><span class="line"><span class="meta">#<span class="meta-keyword">include</span> <span class="meta-string">&lt;sys/wait.h&gt;</span></span></span><br><span class="line"><span class="meta">#<span class="meta-keyword">include</span> <span class="meta-string">&lt;unistd.h&gt;</span></span></span><br><span class="line"><span class="meta">#<span class="meta-keyword">include</span> <span class="meta-string">&lt;sys/user.h&gt;</span>   <span class="comment">/* For user_regs_struct</span></span></span><br><span class="line"><span class="comment"><span class="meta">                             etc. */</span></span></span><br><span class="line"><span class="meta">#<span class="meta-keyword">include</span> <span class="meta-string">&lt;sys/reg.h&gt;</span></span></span><br><span class="line"><span class="meta">#<span class="meta-keyword">include</span> <span class="meta-string">&lt;stdio.h&gt;</span></span></span><br><span class="line"><span class="meta">#<span class="meta-keyword">include</span> <span class="meta-string">&lt;stdlib.h&gt;</span></span></span><br><span class="line"></span><br><span class="line"><span class="function"><span class="keyword">int</span> <span class="title">main</span><span class="params">(<span class="keyword">int</span> argc, <span class="keyword">char</span> *argv[])</span></span></span><br><span class="line"><span class="function"></span>&#123;   <span class="keyword">pid_t</span> traced_process;</span><br><span class="line">    <span class="class"><span class="keyword">struct</span> <span class="title">user_regs_struct</span> <span class="title">regs</span>;</span></span><br><span class="line">    <span class="keyword">long</span> ins;</span><br><span class="line">    <span class="keyword">if</span>(argc != <span class="number">2</span>) &#123;</span><br><span class="line">        <span class="comment">// printf(&quot;Usage: %s &lt;pid to be traced&gt;\n&quot;, argv[0], argv[1]);</span></span><br><span class="line">        <span class="built_in">printf</span>(<span class="string">&quot;Usage: %s &lt;pid to be traced&gt;\n&quot;</span>, argv[<span class="number">0</span>]);</span><br><span class="line">        <span class="built_in">exit</span>(<span class="number">1</span>);</span><br><span class="line">    &#125;</span><br><span class="line">    traced_process = atoi(argv[<span class="number">1</span>]);</span><br><span class="line">    ptrace(PTRACE_ATTACH, traced_process,</span><br><span class="line">           <span class="literal">NULL</span>, <span class="literal">NULL</span>);</span><br><span class="line">    wait(<span class="literal">NULL</span>);</span><br><span class="line">    ptrace(PTRACE_GETREGS, traced_process,</span><br><span class="line">           <span class="literal">NULL</span>, &amp;regs);</span><br><span class="line">    ins = ptrace(PTRACE_PEEKTEXT, traced_process,</span><br><span class="line">                 regs.rip, <span class="literal">NULL</span>);</span><br><span class="line">    <span class="built_in">printf</span>(<span class="string">&quot;EIP: %llx Instruction executed: %lx\n&quot;</span>,</span><br><span class="line">           regs.rip, ins);</span><br><span class="line">    ptrace(PTRACE_DETACH, traced_process,</span><br><span class="line">           <span class="literal">NULL</span>, <span class="literal">NULL</span>);</span><br><span class="line">    <span class="keyword">return</span> <span class="number">0</span>;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+<p><code>tracer</code>会attach到test，检视它的<code>eip</code>（instruction pointer），然后detach。</p>
+<p>如果要注入代码，需要在中止tracee之后使用<code>PTRACE_POKETEXT</code>，然后<code>PTRACE_POKEDATA</code>。</p>
+<p>参考链接：</p>
+<p>https://www.linuxjournal.com/article/6100</p>
+]]></content>
+      <categories>
+        <category>操作系统</category>
+      </categories>
+      <tags>
+        <tag>Linux</tag>
+      </tags>
+  </entry>
+  <entry>
+    <title>博客更新日志</title>
+    <url>/2021/11/13/47/</url>
+    <content><![CDATA[<h1 id="博客更新日志">博客更新日志</h1>
+<p>这里是记录博客更新的日志，包括和博客建设相关的<code>md</code>、为博客增加的功能。</p>
+<span id="more"></span>
+<p>TODOs：</p>
+<ul>
+<li>有新评论时邮件通知</li>
+</ul>
+<p>2023.05.14：</p>
+<ul>
+<li>支持 LaTeX 显示</li>
+</ul>
+<p>2023.05.13：</p>
+<ul>
+<li>增加导航栏选项</li>
+<li>增加 Valine 评论</li>
+<li>修改网站运行信息显示</li>
+</ul>
+<p>2021.11.24：</p>
+<ul>
+<li>博文只显示简介</li>
+<li>显示博文统计数据、显示咕咕天数🕊️</li>
+</ul>
+<p>2021.11.12：</p>
+<ul>
+<li>创建博客</li>
+<li>设置<code>NexT</code>主题</li>
+<li>上传了第一篇博客</li>
+</ul>
+]]></content>
+      <categories>
+        <category>Blog</category>
+      </categories>
+  </entry>
+  <entry>
+    <title>Elasticsearch 使用记录</title>
+    <url>/2023/05/26/26/</url>
+    <content><![CDATA[<h2 id="x00-简介">0x00 简介</h2>
+<p>本文介绍了 ES 在实践上的一些内容，包括：</p>
+<ul>
+<li>ES 中的概念</li>
+<li>高可用的 ES 集群</li>
+<li>ES 调优的设置项</li>
+</ul>
+<span id="more"></span>
+<h2 id="x01-一些名词">0x01 一些名词</h2>
+<p>首先介绍一些 ES 中的概念：</p>
+<ul>
+<li>Index：ES index 就是一组 shard，这些 shard 分布在多个 node 上，每个 shared 都是一个 self-contained index</li>
+<li>shard：有两种类型，primary 和 replica。replica 可以做备份和查询。primary 的数量在创建索引就确定了，但是 replica 可以在后续调整</li>
+</ul>
+<h2 id="x02-高可用">0x02 高可用</h2>
+<p>高可用的 ES 集群有三个方面：</p>
+<ul>
+<li>一个集群内部，可能有节点挂了</li>
+<li>多个集群，涉及集群之间的复制，follower cluster 可以作为 failover，或者就近提供服务的 geo-replica</li>
+<li>定期的 snapshot</li>
+</ul>
+<p>一个可靠的 ES 集群需要有：</p>
+<ul>
+<li>至少三个 master 备选的 node</li>
+<li>每个 role 至少有两个节点</li>
+<li>每个 shard 至少有两个 copy，primary 和 replica</li>
+</ul>
+<p>在剩余的节点上，ES 会自动重建 failed shard，让 health 回到 green。如果要让单节点的 ES 集群健康状态变为 green，需要将 index 的 <code>index.number_of_replicas</code>设置为<code>0</code></p>
+<h2 id="x03-性能调优">0x03 性能调优</h2>
+<p><strong>shard</strong></p>
+<p>要考虑的配置项：primary shard 数量，shard size</p>
+<ul>
+<li>对于时序类的数据，shard size 一般在 20-40 GB</li>
+<li>一个 node 可以管理的 shard 数和堆大小有关，1 GB heap 对应 20 个 shard</li>
+</ul>
+<p>参考：https://www.elastic.co/guide/en/elasticsearch/reference/current/advanced-configuration.html#set-jvm-heap-size</p>
+]]></content>
+      <categories>
+        <category>搜索引擎</category>
+      </categories>
+      <tags>
+        <tag>Elasticsearch</tag>
+      </tags>
+  </entry>
+  <entry>
+    <title>Elasticsearch 101</title>
+    <url>/2023/05/25/11/</url>
+    <content><![CDATA[<h2 id="x00-简介">0x00 简介</h2>
+<p>Elasticsearch 是一个分布式的全文搜索引擎，可以近乎实时地存储、检索数据。ES 的底层基于 Lucene 全文信息检索工具包，另一个搜索系统 Solr 也是基于 Lucene 开发的。</p>
+<ul>
+<li>倒排索引</li>
+<li>ES 对存储使用的优化</li>
+<li>ES 和 MySQL 的比较</li>
+</ul>
+<span id="more"></span>
+<h2 id="x01-es-101">0x01 ES 101</h2>
+<p><strong>倒排索引</strong></p>
+<p>在谷歌等搜索引擎中，一种常见的搜索方式是根据关键词返回相关的文档，即<code>word =&gt; doc</code>。<code>doc =&gt; word</code>这种查询的索引被称为正向索引（forward index），那么<code>word =&gt; doc</code>这种查询的索引就叫做倒排索引（反向索引，inverted index）了。</p>
+<figure class="highlight apache"><table><tr><td class="code"><pre><span class="line"><span class="attribute">DICTIONARY</span>     =====&gt;     DOC</span><br><span class="line"><span class="attribute">ada</span>						<span class="meta"> [1,2,3]</span></span><br><span class="line"><span class="attribute">bob</span>                     <span class="meta"> [2]</span></span><br></pre></td></tr></table></figure>
+<p><strong>ES 的 Dictionary 优化</strong></p>
+<p>除了保存最基本的<code>word =&gt; doc</code>的映射，为了加速<code>word</code>这一层的查询，Lucene 在<code>Dictionary</code>的左边加了一层“字典树”，通过字典树可以定位单词的块，再在块中用二分查找得到单词的位置。</p>
+<blockquote>
+<p>引入字典树是为了在不把字典全部缓存到内存的前提下，也能加速查询单词</p>
+<p>除了字典树，ES 还引入了FST（有限状态转换器，Finite State Transducers）来减少内存占用</p>
+</blockquote>
+<p><strong>ES 的 Posting list 优化</strong></p>
+<p>ES 最右边的一层 DOC，虽然只是一些文档 ID 数组，但是 ES 也在这里做了优化，优化的目标有：</p>
+<ul>
+<li>节省磁盘空间</li>
+<li>快速求交集、并集</li>
+</ul>
+<p>节省磁盘空间：</p>
+<ul>
+<li><p>存储 DOC ID 的增量 + 分块：从存储原始的文档列表，变成存储文档 ID 的增量，比如：</p>
+<figure class="highlight accesslog"><table><tr><td class="code"><pre><span class="line"><span class="string">[73, 300, 302, 332, 343, 372]</span> =&gt;</span><br><span class="line"><span class="string">[73, 227, 2, 30, 11, 29]</span></span><br></pre></td></tr></table></figure>
+<p>因为 Lucene 是用 segment 存储数据的（最多存 65536 个 ID），每个 segment 被分成块，每个块最多存 256 个 ID，这样用增量存储后，可以用更少位数存数据</p></li>
+<li><p>按需分配空间：在上面分块的基础上，检查每个块的最大值需要分配多少位，达到按需分配。比如<code>227</code>就需要8 位，<code>30</code>就需要 5 位</p></li>
+</ul>
+<p>快速求交并集：</p>
+<p>使用 bitmap，用位运算</p>
+<p><strong>为什么 ES 不使用 B+ 树存储？</strong></p>
+<p>B+ 树主要设计目的是减少搜索时访问磁盘的次数，而 Lucene 等搜索引擎设计的时候，追求的目标是倒排压缩率&amp;倒排解压速度&amp;倒排 Bool 运算速度。取倒排到内存运算的时候，是连续读取，时间开销和倒排的大小有关系，所以并不适合用 B+ 数。 同理 MySQL 等数据库使用索引的目的是快速定位某一行数据，若使用倒排这种线性化的数据结构存储数据，其查找的时候访问磁盘的次数会远大于使用 B+ 的数据库。</p>
+<h2 id="x02-sequel">0x02 Sequel</h2>
+<p>后面可能从 ES 的使用方面再写一篇 post，介绍 ES 的索引、映射、分片、备份相关的</p>
+]]></content>
+      <categories>
+        <category>搜索引擎</category>
+      </categories>
+      <tags>
+        <tag>Elasticsearch</tag>
+      </tags>
+  </entry>
+  <entry>
+    <title>my first blog</title>
+    <url>/2021/11/12/17/</url>
+    <content><![CDATA[<p>HELLO WORLD</p>
+<span id="more"></span>
+]]></content>
+      <categories>
+        <category>随笔</category>
+      </categories>
+  </entry>
+  <entry>
+    <title>Jane Street Puzzle @ 2023.1</title>
+    <url>/2023/05/14/39/</url>
+    <content><![CDATA[<h1 id="简介">简介</h1>
+<p>这道题目是 Jane Street 在 2023.1 出的，原文链接在<a href="https://www.janestreet.com/puzzles/lesses-more-index/">这里</a>。</p>
+<p>题目大意是：给定一个四元的数字序列<code>(a,b,c,d)</code>，以及序列的变化规则，需要找到经过变换后能变成<code>(0,0,0,0)</code>的序列中，变换步数最多同时<code>a+b+c+d</code>最小的那个序列。</p>
+<p>其中，序列的变化规则形如： <span class="math display">\[
+(a,b,c,d) \stackrel{f}{\longrightarrow}
+(\lvert a-b \rvert, \lvert b-c \rvert, \lvert c-d \rvert, \lvert d-a \rvert)
+\]</span> 最后要找的序列的限制条件是： <span class="math display">\[
+\begin{align}
+\begin{matrix}
+    &amp;(1)&amp; 0 \le a,b,c,d \le 10^7 \\
+    &amp;(2)&amp; sum(a+b+c+d) \rightarrow min \\
+    &amp;(3)&amp; num(f) \rightarrow max \\
+\end{matrix}
+\end{align}
+\]</span> 定义了特殊情况<code>f(0,0,0,0)=1</code></p>
+<span id="more"></span>
+<h2 id="解法">解法</h2>
+<p>设输入序列为<code>(a,b,c,d)</code></p>
+<p>注意到满足<code>a&gt;b&gt;c&gt;d</code>的序列的变换次数一般会大一些，因为经过<code>f</code>变换，大多数的情况都是四个数参差不齐的情况，连续成立的大小关系比较少见，这里就假设<code>a&gt;b&gt;c&gt;d</code>了</p>
+<p>定义一个归一化处理（记为<code>N</code>变换）： <span class="math display">\[
+(a,b,c,d) \rightarrow (a-d,b-d,c-d,0) \rightarrow (1,\frac{b-d}{a-d},\frac{c-d}{b-d},0)
+\]</span> 上式结果记为<code>(1,x,y,0)</code>，按照前面假设的<code>a&gt;b&gt;c&gt;d</code>，这里有<code>1&gt;x&gt;y&gt;0</code></p>
+<p>要让<code>f</code>变换的次数尽量多，每次变换结果的归一化形式就需要尽量接近。最极端的情况是不变，这样就可以无限下去了</p>
+<p>在归一化空间中，对<code>(1,x,y,0)</code>做<code>f</code>变换： <span class="math display">\[
+(1,x,y,0) \stackrel{f}{\longrightarrow} (1-x,x-y,y,1) \\
+\]</span> <code>N</code>变换需要以四元组最大的数作为约数：（这里四元组可能还有其他的排法） <span class="math display">\[
+(1,1-x,x-y,y) \stackrel{N}{\longrightarrow} (1,\frac{1-x-y}{1-y},\frac{x-2y}{1-y},0) \\
+或者：
+(1,y,x-y,1-x) \stackrel{N}{\longrightarrow} (1,\frac{x+y-1}{x},\frac{2x-y+1}{x},0)
+\]</span> 以第一行为例，和开始归一化的<code>(1,x,y,0)</code>接近，可以消去<code>y</code>得到一个方程： <span class="math display">\[
+x^3-4x^2+6x-2=0
+\]</span> 解方程可以得到一个<code>x=0.456311, y=0.160713</code></p>
+<p>接下来需要用归一化的结果在题目的范围<code>[1,1e8]</code>中反推一个初始序列出来，推导过程就省略了</p>
+<figure class="highlight python"><table><tr><td class="code"><pre><span class="line">x = <span class="number">0.8392867552141612</span></span><br><span class="line">y = <span class="number">0.5436890126920764</span></span><br><span class="line"></span><br><span class="line">MAX_NUM = <span class="number">10000000</span></span><br><span class="line">ERROR = <span class="number">1e-3</span></span><br><span class="line"></span><br><span class="line"></span><br><span class="line"><span class="function"><span class="keyword">def</span> <span class="title">check</span>(<span class="params">a, b, c</span>):</span></span><br><span class="line">    d = <span class="number">0</span></span><br><span class="line">    cnt = <span class="number">1</span></span><br><span class="line">    <span class="keyword">while</span> <span class="literal">True</span>:</span><br><span class="line">        a, b, c, d = <span class="built_in">abs</span>(a - b), <span class="built_in">abs</span>(b - c), <span class="built_in">abs</span>(c - d), <span class="built_in">abs</span>(d - a)</span><br><span class="line">        cnt += <span class="number">1</span></span><br><span class="line">        <span class="keyword">if</span> a == <span class="number">0</span> <span class="keyword">and</span> b == <span class="number">0</span> <span class="keyword">and</span> c == <span class="number">0</span> <span class="keyword">and</span> d == <span class="number">0</span>:</span><br><span class="line">            <span class="built_in">print</span>(<span class="string">f&#x27;check(<span class="subst">&#123;a&#125;</span>,<span class="subst">&#123;b&#125;</span>,<span class="subst">&#123;c&#125;</span>,0) is true, count: <span class="subst">&#123;cnt&#125;</span>&#x27;</span>)</span><br><span class="line">            <span class="keyword">break</span></span><br><span class="line">        <span class="keyword">elif</span> cnt &gt;= <span class="number">1000</span>:</span><br><span class="line">            <span class="keyword">break</span></span><br><span class="line"></span><br><span class="line"></span><br><span class="line"><span class="function"><span class="keyword">def</span> <span class="title">find</span>():</span></span><br><span class="line">    <span class="keyword">for</span> i <span class="keyword">in</span> <span class="built_in">range</span>(MAX_NUM):</span><br><span class="line">        <span class="comment"># print(i)</span></span><br><span class="line">        first = x * i</span><br><span class="line">        second = y * i</span><br><span class="line">        <span class="keyword">if</span> <span class="built_in">abs</span>(<span class="built_in">int</span>(first) - first) &lt;= ERROR <span class="keyword">and</span> <span class="built_in">abs</span>(<span class="built_in">int</span>(second) - second) &lt;= ERROR:</span><br><span class="line">            <span class="built_in">print</span>(<span class="string">f&#x27;i, first, second: <span class="subst">&#123;i&#125;</span>, <span class="subst">&#123;first&#125;</span>, <span class="subst">&#123;second&#125;</span>&#x27;</span>)</span><br><span class="line">            check(i, <span class="built_in">int</span>(first), <span class="built_in">int</span>(second))</span><br><span class="line"></span><br><span class="line"></span><br><span class="line"><span class="keyword">if</span> __name__ == <span class="string">&#x27;__main__&#x27;</span>:</span><br><span class="line">    find()</span><br><span class="line">    <span class="built_in">print</span>(<span class="string">&#x27;---&#x27;</span>)</span><br><span class="line">    check(<span class="number">8646064</span>, <span class="number">3945294</span>, <span class="number">1389537</span>)</span><br></pre></td></tr></table></figure>
+<p>最后可以得到结果了：<code>(8646064, 3945294, 1389537, 0)</code></p>
+]]></content>
+      <categories>
+        <category>随笔</category>
+      </categories>
+      <tags>
+        <tag>Puzzle</tag>
+      </tags>
+  </entry>
+  <entry>
+    <title>Lustre 101</title>
+    <url>/2023/07/27/09/</url>
+    <content><![CDATA[<h2 id="x00-lustre-intro">0x00 Lustre Intro</h2>
+<p>This post is a brief introduction to Lustre, an open-source distributed clustered file system.</p>
+<span id="more"></span>
+<h2 id="x01-architecture">0x01 Architecture</h2>
+<p>Lustre architecture</p>
+<p><img src="lustre-arch.png" alt="未命名文件" style="zoom:60%;" /></p>
+<ul>
+<li>元数据服务器（metadata server，MDS）：一个Lustre文件系统通常拥有两个元数据服务器（active和standby），一个元数据服务器则拥有若干元数据目标（metadata targets，MDTs）。元数据目标存储命名空间元数据：文件名、目录、访问权限、文件结构等信息。不同于诸如GPFS和PanFS等基于块并由元数据服务器控制所有块分配的分布式文件系统，Lustre元数据服务器仅仅关心路径搜索和权限检查而不会牵涉任何的文件I/O操作。该特性避免元数据服务器成为集群扩展的瓶颈。</li>
+<li>对象存储服务器（object storage server，OSS）将文件数据存储于一个或多个对象存储目标（object storage target，OST）中。取决于服务器硬件，一个对象存储服务器通常有二到八个对象存储目标，每个对象存储目标管理一个本地文件系统。Lustre文件系统的空间等于所有对象存储目标的容量总和。</li>
+<li>客户机（Clients）能访问并使用数据。Lustre为所有客户机提供统一的命名空间。</li>
+</ul>
+<h2 id="x02-network">0x02 Network</h2>
+<p>lustre是基于RPC的，下面是整个RPC stack。LNet是自己做flow control的</p>
+<figure class="highlight asciidoc"><table><tr><td class="code"><pre><span class="line"><span class="section">Node-specific lustre code</span></span><br><span class="line"><span class="section">=========================</span></span><br><span class="line"><span class="section">portal RPC</span></span><br><span class="line"><span class="section">=========================</span></span><br><span class="line"><span class="section">LNet(lustre networking)</span></span><br><span class="line"><span class="section">=========================</span></span><br><span class="line"><span class="section">LND(lustre network driver), o2iblnd(OFED 2nd IB LND)</span></span><br><span class="line"><span class="section">=========================</span></span><br><span class="line">OFED</span><br></pre></td></tr></table></figure>
+]]></content>
+      <categories>
+        <category>文件系统</category>
+      </categories>
+      <tags>
+        <tag>Lustre</tag>
+      </tags>
+  </entry>
+  <entry>
+    <title>optimized_cpp-ch2</title>
+    <url>/2021/11/13/39/</url>
+    <content><![CDATA[<h1 id="ch2-实现智能指针">Ch2 实现智能指针</h1>
+<p>智能指针最基本的功能：对超出作用域的对象进行释放</p>
+<span id="more"></span>
+<figure class="highlight cpp"><table><tr><td class="code"><pre><span class="line"><span class="comment">// class shape_type</span></span><br><span class="line"><span class="class"><span class="keyword">enum</span> <span class="keyword">class</span> <span class="title">shape_type</span> &#123;</span></span><br><span class="line">    circle,</span><br><span class="line">    triangle,</span><br><span class="line">    rectangle,</span><br><span class="line">&#125;;</span><br><span class="line"><span class="comment">// create shape</span></span><br><span class="line"><span class="function">shape* <span class="title">create_shape</span><span class="params">(shape_type type)</span> </span>&#123;</span><br><span class="line">    <span class="built_in"><span class="keyword">switch</span></span> (type) &#123;</span><br><span class="line">    <span class="keyword">case</span> shape_type::circle:</span><br><span class="line">        <span class="keyword">return</span> <span class="keyword">new</span> <span class="built_in">circle</span>();</span><br><span class="line">    <span class="keyword">case</span> shape_type::triangle:</span><br><span class="line">        <span class="keyword">return</span> <span class="keyword">new</span> <span class="built_in">triangle</span>();</span><br><span class="line">    <span class="keyword">case</span> shape_type::rectangle:</span><br><span class="line">        <span class="keyword">return</span> <span class="keyword">new</span> <span class="built_in">rectangle</span>();</span><br><span class="line">    &#125;</span><br><span class="line">&#125;</span><br><span class="line"><span class="comment">// wrapper</span></span><br><span class="line"><span class="class"><span class="keyword">class</span> <span class="title">shape_wrapper</span> &#123;</span></span><br><span class="line"><span class="keyword">public</span>:</span><br><span class="line">  <span class="function"><span class="keyword">explicit</span> <span class="title">shape_wrapper</span><span class="params">(shape* ptr = <span class="literal">nullptr</span>)</span>: ptr_(ptr) &#123;</span>&#125;</span><br><span class="line">  ~<span class="built_in">shape_wrapper</span>() &#123;</span><br><span class="line">    <span class="keyword">delete</span> ptr_;</span><br><span class="line">  &#125;</span><br><span class="line">  <span class="function">shape* <span class="title">get</span><span class="params">()</span> <span class="keyword">const</span> </span>&#123; <span class="keyword">return</span> ptr_; &#125;</span><br><span class="line"></span><br><span class="line"><span class="keyword">private</span>:</span><br><span class="line">  shape* ptr_;</span><br><span class="line">&#125;;</span><br><span class="line"><span class="comment">// example function</span></span><br><span class="line"><span class="function"><span class="keyword">void</span> <span class="title">foo</span><span class="params">()</span> </span>&#123;</span><br><span class="line">    <span class="comment">// ...</span></span><br><span class="line">    <span class="function">shape_wrapper <span class="title">ptr_wrapper</span><span class="params">(create_shape(...))</span></span>;</span><br><span class="line">    <span class="comment">// ...</span></span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+<p>为了保证使用<code>create_shape</code>的返回值时，不会出现内存泄漏。我们需要把这个返回值放到一个本地变量中，并确保其析构函数会删除该对象。</p>
+<p><code>shape_wrapper</code>仍然缺少的功能：</p>
+<ul>
+<li>这个类只适用于shape类</li>
+<li>行为不太像指针</li>
+<li>拷贝这类对象会引发异常</li>
+</ul>
+<p><strong>包装任意类型的指针</strong></p>
+<p>使用模板：</p>
+<figure class="highlight cpp"><table><tr><td class="code"><pre><span class="line"><span class="keyword">template</span> &lt;<span class="keyword">typename</span> T&gt;</span><br><span class="line"><span class="class"><span class="keyword">class</span> <span class="title">smart_ptr</span> &#123;</span></span><br><span class="line"><span class="keyword">public</span>:</span><br><span class="line">  <span class="function"><span class="keyword">explicit</span> <span class="title">shape_wrapper</span><span class="params">(T* ptr = <span class="literal">nullptr</span>)</span>: ptr_(ptr) &#123;</span>&#125;</span><br><span class="line">  ~<span class="built_in">shape_wrapper</span>() &#123;</span><br><span class="line">    <span class="keyword">delete</span> ptr_;</span><br><span class="line">  &#125;</span><br><span class="line">  <span class="function">T* <span class="title">get</span><span class="params">()</span> <span class="keyword">const</span> </span>&#123; <span class="keyword">return</span> ptr_; &#125;</span><br><span class="line"></span><br><span class="line"><span class="keyword">private</span>:</span><br><span class="line">  T* ptr_;</span><br><span class="line">&#125;;</span><br></pre></td></tr></table></figure>
+<p><strong>使<code>smart_ptr</code>行为更像指针</strong></p>
+<p>指针可以：</p>
+<ul>
+<li>用<code>*</code>解引用</li>
+<li>用<code>-&gt;</code>指向对象成员</li>
+<li>用在布尔表达式中</li>
+</ul>
+<p>加几个成员函数：</p>
+<figure class="highlight cpp"><table><tr><td class="code"><pre><span class="line"><span class="keyword">template</span> &lt;<span class="keyword">typename</span> T&gt;</span><br><span class="line"><span class="class"><span class="keyword">class</span> <span class="title">smart_ptr</span> &#123;</span></span><br><span class="line">	<span class="comment">//...</span></span><br><span class="line">	T&amp; <span class="keyword">operator</span>*() <span class="keyword">const</span> &#123;<span class="keyword">return</span> *ptr_;&#125;</span><br><span class="line">    T* <span class="keyword">operator</span>-&gt;() <span class="keyword">const</span> &#123;<span class="keyword">return</span> ptr_;&#125;</span><br><span class="line">    <span class="function"><span class="keyword">operator</span> <span class="title">bool</span><span class="params">()</span> <span class="keyword">const</span> </span>&#123;<span class="keyword">return</span> ptr_;&#125;</span><br><span class="line">    <span class="comment">//...</span></span><br><span class="line">&#125;;</span><br></pre></td></tr></table></figure>
+<p><strong>拷贝构造和赋值</strong></p>
+<p>在拷贝智能指针时，因为对象并没有复制一份，因此可能会对同一块内存释放两次，导致程序崩溃。</p>
+<p>因此需要禁用拷贝：</p>
+<figure class="highlight cpp"><table><tr><td class="code"><pre><span class="line"><span class="keyword">template</span> &lt;<span class="keyword">typename</span> T&gt;</span><br><span class="line"><span class="class"><span class="keyword">class</span> <span class="title">smart_ptr</span> &#123;</span></span><br><span class="line">	<span class="comment">//...</span></span><br><span class="line">    <span class="built_in">smart_ptr</span>(<span class="keyword">const</span> smart_ptr&amp;)</span><br><span class="line">        = <span class="keyword">delete</span>;</span><br><span class="line">    smart_ptr&amp; <span class="keyword">operator</span>=(<span class="keyword">const</span> smart_ptr&amp;)</span><br><span class="line">        = <span class="keyword">delete</span>;</span><br><span class="line">&#125;;</span><br></pre></td></tr></table></figure>
+<p>但是<code>smart_ptr&lt;shape&gt; ptr2&#123;ptr1&#125;</code>仍然可能出现释放两次内存的错误。</p>
+<p>因此尝试在拷贝时转移指针的所有权：</p>
+<figure class="highlight cpp"><table><tr><td class="code"><pre><span class="line"><span class="keyword">template</span> &lt;<span class="keyword">typename</span> T&gt;</span><br><span class="line"><span class="class"><span class="keyword">class</span> <span class="title">smart_ptr</span> &#123;</span></span><br><span class="line">    <span class="comment">// 拷贝构造函数</span></span><br><span class="line">    <span class="built_in">smart_ptr</span>(smart_ptr&amp; other) &#123;</span><br><span class="line">		ptr_ = other.<span class="built_in">release</span>();</span><br><span class="line">    &#125;</span><br><span class="line">    <span class="comment">// 赋值函数</span></span><br><span class="line">    smart_ptr&amp; <span class="keyword">operator</span>=(smart_ptr&amp; rhs) &#123;</span><br><span class="line">		<span class="built_in">smart_ptr</span>(rhs).<span class="built_in">swap</span>(*<span class="keyword">this</span>); <span class="comment">// 构造临时对象</span></span><br><span class="line">        <span class="keyword">return</span> *<span class="keyword">this</span>;</span><br><span class="line">    &#125;</span><br><span class="line">    <span class="comment">// 释放对指针的所有权</span></span><br><span class="line">    <span class="function">T* <span class="title">release</span><span class="params">()</span> </span>&#123;</span><br><span class="line">        T* ptr = ptr_;</span><br><span class="line">        ptr_ = <span class="literal">nullptr</span>;</span><br><span class="line">        <span class="keyword">return</span> ptr;</span><br><span class="line">    &#125;</span><br><span class="line">    <span class="comment">// 交换对指针的所有权</span></span><br><span class="line">    <span class="function"><span class="keyword">void</span> <span class="title">swap</span><span class="params">(smart_ptr&amp; rhs)</span> </span>&#123;</span><br><span class="line">        <span class="keyword">using</span> std::swap;</span><br><span class="line">        <span class="built_in">swap</span>(ptr_, rhs.ptr_);</span><br><span class="line">    &#125;</span><br><span class="line">&#125;;</span><br></pre></td></tr></table></figure>
+<p>上面的实现的问题是：</p>
+<p>如果把一个smart_ptr传递给另一个，你就不再拥有这个对象了。</p>
+<p><strong>使用“移动”改善smart_ptr的行为</strong></p>
+<figure class="highlight cpp"><table><tr><td class="code"><pre><span class="line"><span class="keyword">template</span> &lt;<span class="keyword">typename</span> T&gt;</span><br><span class="line"><span class="class"><span class="keyword">class</span> <span class="title">smart_ptr</span> &#123;</span></span><br><span class="line">    <span class="comment">// 移动构造</span></span><br><span class="line">	<span class="built_in">smart_ptr</span>(smart_ptr&amp;&amp; other) &#123;</span><br><span class="line">		ptr_ = other.<span class="built_in">release</span>();</span><br><span class="line">    &#125;</span><br><span class="line">    <span class="comment">// 拷贝构造</span></span><br><span class="line">    smart_ptr&amp; <span class="keyword">operator</span>=(smart_ptr rhs) &#123;</span><br><span class="line">        rhs.<span class="built_in">swap</span>(*<span class="keyword">this</span>);</span><br><span class="line">        <span class="keyword">return</span> *<span class="keyword">this</span>;</span><br><span class="line">    &#125;</span><br><span class="line">&#125;;</span><br></pre></td></tr></table></figure>
+<blockquote>
+<p>C++的规则： 如果提供了移动构造函数而没有手动提供拷贝构造函数，那么后者会被禁用。</p>
+</blockquote>
+<p>因此：</p>
+<figure class="highlight cpp"><table><tr><td class="code"><pre><span class="line">smart_ptr&lt;shape&gt; ptr1&#123;<span class="built_in">create_shape</span>(shape_type::circle)&#125;;</span><br><span class="line">smart_ptr&lt;shape&gt; ptr2&#123;ptr1&#125;;             <span class="comment">// 编译出错</span></span><br><span class="line">smart_ptr&lt;shape&gt; ptr3;</span><br><span class="line">ptr3 = ptr1;                             <span class="comment">// 编译出错</span></span><br><span class="line">ptr3 = std::<span class="built_in">move</span>(ptr1);                  <span class="comment">// OK，可以</span></span><br><span class="line">smart_ptr&lt;shape&gt; ptr4&#123;std::<span class="built_in">move</span>(ptr3)&#125;;  <span class="comment">// OK，可以</span></span><br></pre></td></tr></table></figure>
+<p>以上就是C++11的<code>unique_ptr</code>的基本行为</p>
+<p>但是，一个<code>circle*</code>可以隐式地转换成<code>shape*</code>，而上面地<code>smart_ptr&lt;circle&gt;</code>却不能自动转换成<code>smart_ptr&lt;shape&gt;</code>，这还不够自然。</p>
+<figure class="highlight cpp"><table><tr><td class="code"><pre><span class="line"><span class="keyword">template</span> &lt;<span class="keyword">typename</span> U&gt;</span><br><span class="line"><span class="class"><span class="keyword">class</span> <span class="title">smart_ptr</span> &#123;</span></span><br><span class="line">	<span class="built_in">smart_ptr</span>(smart_ptr&lt;U&gt;&amp;&amp; other) &#123;</span><br><span class="line">        ptr_ = other.<span class="built_in">release</span>(); <span class="comment">// 不正确的转换会在编译时报错</span></span><br><span class="line">    &#125;  </span><br><span class="line">&#125;;</span><br></pre></td></tr></table></figure>
+<p>上面的这个构造函数不会被编译器看作是移动构造函数</p>
+<p><strong>引用计数</strong></p>
+<p>和<code>unique_ptr</code>相比，多个<code>shared_ptr</code>可以同时拥有一个对象，因此它们需要共享一个计数。</p>
+<figure class="highlight cpp"><table><tr><td class="code"><pre><span class="line"><span class="class"><span class="keyword">class</span> <span class="title">shared_count</span> &#123;</span></span><br><span class="line"><span class="keyword">public</span>:</span><br><span class="line">	<span class="built_in">shared_count</span>();</span><br><span class="line">    <span class="function"><span class="keyword">void</span> <span class="title">add_count</span><span class="params">()</span></span>;</span><br><span class="line">    <span class="function"><span class="keyword">long</span> <span class="title">reduce_count</span><span class="params">()</span></span>;</span><br><span class="line">    <span class="function"><span class="keyword">long</span> <span class="title">get_count</span><span class="params">()</span> <span class="keyword">const</span></span>;</span><br><span class="line"><span class="keyword">private</span>:</span><br><span class="line">    <span class="keyword">long</span> count;</span><br><span class="line">&#125;;</span><br></pre></td></tr></table></figure>
+<p>添加了shared_count的smart_ptr：</p>
+<figure class="highlight cpp"><table><tr><td class="code"><pre><span class="line"><span class="keyword">template</span> &lt;<span class="keyword">typename</span> T&gt;</span><br><span class="line"><span class="class"><span class="keyword">class</span> <span class="title">smart_ptr</span> &#123;</span></span><br><span class="line"><span class="keyword">public</span>:</span><br><span class="line">    <span class="function"><span class="keyword">explicit</span> <span class="title">smart_ptr</span><span class="params">(T* ptr = <span class="literal">nullptr</span>)</span>: ptr_(ptr) &#123;</span></span><br><span class="line">        <span class="keyword">if</span>(ptr) &#123;</span><br><span class="line">            shared_count_ = <span class="keyword">new</span> <span class="built_in">shared_count</span>();</span><br><span class="line">        &#125;</span><br><span class="line">    &#125;</span><br><span class="line">    ~<span class="built_in">smart_ptr</span>() &#123;</span><br><span class="line">        <span class="keyword">if</span>(ptr_ &amp;&amp; shared_count_-&gt;<span class="built_in">reduce_count</span>()) &#123;</span><br><span class="line">            <span class="keyword">delete</span> ptr_;</span><br><span class="line">            <span class="keyword">delete</span> shared_count_;</span><br><span class="line">        &#125;</span><br><span class="line">    &#125;</span><br><span class="line"><span class="keyword">private</span>:</span><br><span class="line">    T* ptr_;</span><br><span class="line">    shared_count* shared_count_;</span><br><span class="line">&#125;;</span><br></pre></td></tr></table></figure>
+<p>新的swap函数：</p>
+<figure class="highlight cpp"><table><tr><td class="code"><pre><span class="line"><span class="function"><span class="keyword">void</span> <span class="title">swap</span><span class="params">(smart_ptr&amp; rhs)</span> </span>&#123;</span><br><span class="line">	<span class="keyword">using</span> std::swap;</span><br><span class="line">	<span class="built_in">swap</span>(ptr_, rhs.ptr_);</span><br><span class="line">	<span class="built_in">swap</span>(shared_count_, rhs.shared_count_);</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+<p>新的拷贝构造，移动构造函数：</p>
+<figure class="highlight cpp"><table><tr><td class="code"><pre><span class="line"><span class="built_in">smart_ptr</span>(<span class="keyword">const</span> smart_ptr&amp; other) &#123;</span><br><span class="line">    ptr_ = other.ptr_;</span><br><span class="line">    <span class="keyword">if</span> (ptr_) &#123;</span><br><span class="line">      other.shared_count_-&gt;<span class="built_in">add_count</span>();</span><br><span class="line">      shared_count_ = other.shared_count_;</span><br><span class="line">    &#125;</span><br><span class="line">&#125;</span><br><span class="line"><span class="keyword">template</span> &lt;<span class="keyword">typename</span> U&gt;</span><br><span class="line"><span class="built_in">smart_ptr</span>(<span class="keyword">const</span> smart_ptr&lt;U&gt;&amp; other) &#123;</span><br><span class="line">    ptr_ = other.ptr_;</span><br><span class="line">    <span class="keyword">if</span> (ptr_) &#123;</span><br><span class="line">      other.shared_count_-&gt;<span class="built_in">add_count</span>();</span><br><span class="line">      shared_count_ = other.shared_count_;</span><br><span class="line">    &#125;</span><br><span class="line">&#125;</span><br><span class="line"><span class="keyword">template</span> &lt;<span class="keyword">typename</span> U&gt;</span><br><span class="line"><span class="built_in">smart_ptr</span>(smart_ptr&lt;U&gt;&amp;&amp; other) &#123;</span><br><span class="line">    ptr_ = other.ptr_;</span><br><span class="line">    <span class="keyword">if</span> (ptr_) &#123;</span><br><span class="line">      shared_count_ = other.shared_count_;</span><br><span class="line">      other.ptr_ = <span class="literal">nullptr</span>;</span><br><span class="line">    &#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+<p><strong>指针类型转换</strong></p>
+<p>c++中有不同的类型强制转换： <code>static_cast</code>、<code>reinterpret_cast</code>、<code>const_cast</code>、<code>dynamic_cast</code></p>
+]]></content>
+      <categories>
+        <category>语言</category>
+      </categories>
+      <tags>
+        <tag>C++</tag>
+      </tags>
+  </entry>
+  <entry>
+    <title>gdb、常用寄存器</title>
+    <url>/2021/11/22/50/</url>
+    <content><![CDATA[<h1 id="简介">简介</h1>
+<p>最近在写CSAPP的bomb lab，需要用gdb调试，还涉及到一些汇编的代码。这里记录一下gdb调试的方法，以及常用寄存器的作用。</p>
+<span id="more"></span>
+<h2 id="gdb">gdb</h2>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 74%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th><code>r</code></th>
+<th>运行程序</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>b *&lt;地址&gt;</code></td>
+<td>在某个地址设置断点，具体哪里，可以看反汇编的代码，可以根据那个直接复制粘贴设断点的</td>
+</tr>
+<tr class="even">
+<td><code>d</code></td>
+<td>删除所有断点</td>
+</tr>
+<tr class="odd">
+<td><code>d &lt;断点编号&gt;</code></td>
+<td>删除指定断点</td>
+</tr>
+<tr class="even">
+<td><code>info b</code></td>
+<td>查看所有断点</td>
+</tr>
+<tr class="odd">
+<td><code>continue</code></td>
+<td>从断点处继续执行</td>
+</tr>
+<tr class="even">
+<td><code>display $&lt;寄存器名&gt;</code></td>
+<td>跟踪寄存器，碰到断点停下时会显示出所有跟踪的寄存器的当前值，非常好用的一个命令，注意的是gdb中表示寄存器的话前面用的不是百分符号%，而是美元符号$</td>
+</tr>
+<tr class="odd">
+<td><code>x/&lt;参数&gt; &lt;地址&gt;</code></td>
+<td>访问地址的内存，其实就是间接访问，也是很好用的指令，关于参数，s是输出为字符串，d为输出为十进制，x为输出为十六进制，b、w、l、q控制输出字节，默认是w，四字节，s字符串不受这个控制除外。</td>
+</tr>
+<tr class="even">
+<td><code>info r</code></td>
+<td>查看所有寄存器</td>
+</tr>
+</tbody>
+</table>
+<p>用gdb运行带参数的可执行文件：</p>
+<figure class="highlight bash"><table><tr><td class="code"><pre><span class="line">gdb --args bomb defuse	// defuse是参数</span><br></pre></td></tr></table></figure>
+<h2 id="常用寄存器">常用寄存器</h2>
+<p>寄存器一般以<code>e</code>或<code>r</code>开头，<code>e</code>代表32位，<code>r</code>代表64位。</p>
+<p>一般寄存器：AX、BX、CX、DX AX：累积暂存器，BX:基底暂存器，CX:计数暂存器，DX:资料暂存器</p>
+<blockquote>
+<p>前面有函数调用的话，一般<code>%rax</code>就是程序的返回值</p>
+</blockquote>
+<p>索引暂存器：SI、DI SI：来源索引暂存器，DI：目的索引暂存器</p>
+<p>堆叠、基底暂存器：SP、BP SP：堆叠指标暂存器，BP：基底指标暂存器</p>
+<p><code>ebp</code>称为基址指针（base pointer），在反编译的文件中，经常可以看到一个函数的起始代码：</p>
+<figure class="highlight plaintext"><table><tr><td class="code"><pre><span class="line">push ebp 		;保存当前ebp</span><br><span class="line">mov ebp,esp 	;EBP设为当前堆栈指针</span><br><span class="line">sub esp, xxx 	;预留xxx字节给函数临时变量.</span><br><span class="line">...</span><br><span class="line"></span><br><span class="line">; bomb example</span><br><span class="line">0000000000400efc &lt;phase_2&gt;:</span><br><span class="line">  400efc:	55                   	push   %rbp</span><br><span class="line">  400efd:	53                   	push   %rbx</span><br><span class="line">  400efe:	48 83 ec 28          	sub    $0x28,%rsp</span><br><span class="line">  400f02:	48 89 e6             	mov    %rsp,%rsi</span><br><span class="line">  ; ...</span><br><span class="line">  400f3c:	48 83 c4 28          	add    $0x28,%rsp</span><br><span class="line">  400f40:	5b                   	pop    %rbx</span><br><span class="line">  400f41:	5d                   	pop    %rbp</span><br><span class="line">  400f42:	c3                   	retq   </span><br></pre></td></tr></table></figure>
+<p>这样一来，EBP 构成了该函数的一个框架，在EBP上方分别是原来的EBP，返回地址和参数。</p>
+<p><code>esp</code>专门用作堆栈指针，被形象地称为栈顶指针，堆栈的顶部是地址小的区域，压入堆栈的数据越多，<code>esp</code>也就越来越小。在32位平台上，<code>esp</code>每次减少4字节。</p>
+]]></content>
+      <categories>
+        <category>操作系统</category>
+      </categories>
+      <tags>
+        <tag>Register</tag>
+        <tag>GDB</tag>
+      </tags>
+  </entry>
+  <entry>
+    <title>云服务器部署 Grafana 监控记录</title>
+    <url>/2023/07/19/33/</url>
+    <content><![CDATA[<h2 id="x00-简介">0x00 简介</h2>
+<p>记录在腾讯云服务器上面配置prometheus+grafana，监视云主机运行状态的过程。</p>
+<span id="more"></span>
+<h2 id="x01-整体结构">0x01 整体结构</h2>
+<p>要部署的服务有prometheus、grafana、node_exporter，前两个在docker中部署，node_exporter因为要采集宿主机的指标信息，所以没有用docker运行。</p>
+<p>数据上报的过程是：</p>
+<p>node_exporter (9100 port) =&gt; prometheus (9090 port) =&gt; grafana (3000 port)</p>
+<h2 id="x02-部署过程">0x02 部署过程</h2>
+<p><strong>Docker</strong></p>
+<p>部署比较简单，拉取镜像，指定配置文件映射，再启动容器就ok了。</p>
+<p>grafana官方网站有一些dashboard模板，可以通过ID导入，省去了自建dashboard的麻烦。</p>
+<p><strong>效果图</strong></p>
+<figure>
+<img src="image-20230719160454386.png" alt="image-20230719160454386" /><figcaption aria-hidden="true">image-20230719160454386</figcaption>
+</figure>
+<h2 id="x03-其他">0x03 其他</h2>
+<p>因为prometheus和grafana是通过docker启动的，在配置里面要用docker容器的ip</p>
+<figure>
+<img src="image-20230719160714202.png" alt="image-20230719160714202" /><figcaption aria-hidden="true">image-20230719160714202</figcaption>
+</figure>
+<p>查询容器的ip：</p>
+<figure class="highlight bash"><table><tr><td class="code"><pre><span class="line">docker inspect -f <span class="string">&#x27;&#123;&#123;range .NetworkSettings.Networks&#125;&#125;&#123;&#123;.IPAddress&#125;&#125;&#123;&#123;end&#125;&#125;&#x27;</span> &lt;container_name_or_id&gt;</span><br></pre></td></tr></table></figure>
+]]></content>
+      <categories>
+        <category>数据可视化</category>
+      </categories>
+      <tags>
+        <tag>Grafana</tag>
+        <tag>Docker</tag>
+      </tags>
+  </entry>
+</search>
