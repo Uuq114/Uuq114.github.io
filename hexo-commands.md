@@ -55,6 +55,3 @@ hexo s --draft
 ```bash
 hexo publish <draft_name>
 ```
-
-
-
